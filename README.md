@@ -7,6 +7,8 @@ debloat lists do. It runs by itself after every restart and needs no computer on
 Tested on a Chromecast with Google TV HD (boreal), Google TV 14, build UTTC.250917.004. The 4K model
 (sabrina) runs the same build and should behave the same, but hasn't been tried.
 
+![Cast Fix on the TV after two restarts: last run "Casting ready", with the log of each run](docs/screenshot.png)
+
 ## The problem
 
 With `com.google.android.tungsten.setupwraith` disabled, phones refuse to cast:
