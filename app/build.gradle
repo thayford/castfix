@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.thayford.castfix'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.thayford.castfix'
+        // Wireless debugging (adb over TLS, pairing codes) exists from Android 11.
+        minSdk 30
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+        // Chromecast with Google TV runs a 32-bit userspace; the other ABIs only add Conscrypt copies.
+        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
+    }
+
+    buildTypes {
+        release {
+            // No R8: Conscrypt and BouncyCastle load classes by reflection.
+            minifyEnabled false
+            // Sideloaded over ADB, never published.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/versions/9/OSGI-INF/MANIFEST.MF', 'META-INF/BCKEY.DSA', 'META-INF/BCKEY.SF']
+        }
+    }
+}
+
+dependencies {
+    // ADB client with Wireless debugging pairing and TLS (Apache-2.0 / GPL-3.0-or-later dual licence).
+    implementation 'com.github.MuntashirAkon:libadb-android:3.1.1'
+    // TLSv1.3 for the adb connection; libadb picks it up by class name.
+    implementation 'org.conscrypt:conscrypt-android:2.5.3'
+    // Self-signed certificate for the app's adb key; same BouncyCastle line libadb already pulls in.
+    implementation 'org.bouncycastle:bcpkix-jdk15to18:1.81'
+    implementation 'androidx.annotation:annotation:1.9.1'
+}
