@@ -43,7 +43,8 @@ public class MainActivity extends Activity {
 
         root.addView(text("Cast Fix", 34, Color.WHITE));
         root.addView(text("Lets phones cast to this Chromecast while the setup wizard stays off for your own "
-                + "launcher. It runs by itself after every restart; use the button if casting stops anyway.",
+                + "launcher. It runs by itself after every restart; use the button if casting stops anyway. "
+                + "If a run is interrupted, the next one puts the setup wizard back first.",
                 16, Color.rgb(170, 180, 190)));
         status = text("", 20, Color.WHITE);
         status.setPadding(0, dp(24), 0, 0);
@@ -82,6 +83,9 @@ public class MainActivity extends Activity {
         super.onResume();
         registerReceiver(done, new IntentFilter(CastFixService.ACTION_DONE), Context.RECEIVER_NOT_EXPORTED);
         refresh();
+        // Opening the app is the moment the owner is looking, so it is also the moment to put the device back
+        // if a run died mid-way. This costs one adb round trip and only happens when a run left a record.
+        if (!CastFixService.isRunning() && new CastFixer(this).needsRecovery()) start("recovery");
     }
 
     @Override
@@ -91,6 +95,11 @@ public class MainActivity extends Activity {
     }
 
     private void start(String trigger) {
+        if (CastFixService.isRunning()) {
+            // The service refuses a second concurrent run, so say so instead of claiming to work.
+            status.setText("A run is already in progress.");
+            return;
+        }
         startForegroundService(new Intent(this, CastFixService.class)
                 .putExtra(CastFixService.EXTRA_TRIGGER, trigger));
         run.setEnabled(false);
@@ -100,9 +109,12 @@ public class MainActivity extends Activity {
 
     private void refresh() {
         boolean busy = CastFixService.isRunning();
+        CastFixer fixer = new CastFixer(this);
         run.setEnabled(!busy);
         run.setText(busy ? "Working, about a minute" : "Fix casting now");
-        status.setText(busy ? "Running…" : "Last run: " + log.lastResult());
+        String last = "Last run: " + log.lastResult();
+        String recovery = fixer.recoveryNote();
+        status.setText(recovery.isEmpty() ? last : recovery);
         boolean granted = checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
                 == PackageManager.PERMISSION_GRANTED;
         setup.setText("Setup: " + (log.isPaired() ? "paired" : "NOT paired")
