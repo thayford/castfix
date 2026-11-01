@@ -41,6 +41,12 @@ final class CastFixer {
     private static final long CREDS_WAIT_MS = 100_000;
     /** How long a receiver may not answer on 8009 before its log decides instead. */
     private static final long NO_ANSWER_MS = 15_000;
+    /** A receiver that has just started takes the credentials within seconds once the wizard is on. */
+    private static final long SELF_LOAD_WAIT_MS = 20_000;
+    /** A restarted receiver signed within 4 to 6 s on boreal. */
+    private static final long RESTART_WAIT_MS = 60_000;
+    /** The restarted receiver has to stay up: one that comes back after the wizard is off has no credentials. */
+    private static final long STABLE_MS = 10_000;
 
     private final Context context;
     private final FixLog log;
@@ -157,7 +163,8 @@ final class CastFixer {
             wizardOpenedAt = requestedAt;
         }
 
-        long loadedAt = awaitSigner(shell, wizardOpenedAt, CREDS_WAIT_MS);
+        long loadedAt = awaitSigner(shell, wizardOpenedAt, SELF_LOAD_WAIT_MS);
+        if (loadedAt == 0) loadedAt = restartReceiver(shell);
         // Close the crash-loop window as early as possible, not after the rest of the run.
         disableWizard(shell);
         restoreHome(shell, homeBefore);
@@ -172,6 +179,38 @@ final class CastFixer {
             return "Casting ready (credentials loaded).";
         }
         return "Cast credentials did not load; run it again.";
+    }
+
+    /**
+     * Restarts the receiver while the wizard is on, and returns 1 once the new one signs and stays up.
+     *
+     * <p>A receiver that has been running without its credentials does not take them when the wizard comes
+     * on: on boreal one that had been up for 15 hours had the wizard answer its query and kept signing with an
+     * empty signature, and one started at boot did the same for 20 s. Restarted with the wizard on, each signed
+     * within 6 s (cleanyourtv #2615). `am crash` has the system bring the service back; `am force-stop` plus
+     * starting the service by hand gives one that Android kills 30 s later. A receiver that signs is never
+     * restarted, so a running cast is not interrupted.
+     */
+    private long restartReceiver(Shell shell) throws Exception {
+        String pid = firstLine(shell.run("pidof " + CAST_RECEIVER));
+        log.add("receiver (pid " + pid + ") did not load the credentials; restarting it");
+        long restartedAt = ReceiverState.deviceNow(shell);
+        shell.run("am crash " + CAST_RECEIVER);
+        if (awaitSigner(shell, restartedAt, RESTART_WAIT_MS) == 0) return 0;
+        String started = firstLine(shell.run("pidof " + CAST_RECEIVER));
+        Thread.sleep(STABLE_MS);
+        String later = firstLine(shell.run("pidof " + CAST_RECEIVER));
+        if (!started.equals(later)) {
+            log.add("receiver restarted again (pid " + started + " -> " + later + ")");
+            return awaitSigner(shell, ReceiverState.deviceNow(shell), RESTART_WAIT_MS);
+        }
+        return 1;
+    }
+
+    private static String firstLine(String text) {
+        String trimmed = text.trim();
+        int newline = trimmed.indexOf('\n');
+        return newline < 0 ? trimmed : trimmed.substring(0, newline).trim();
     }
 
     /**

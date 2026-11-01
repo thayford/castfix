@@ -49,7 +49,9 @@ boot Cast Fix:
 4. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
    wizard
 5. waits until the receiver signs (or, if it does not answer on 8009, logs `Created singleton instance of
-   ClientAuthSigner`), which took 7 to 14 seconds in testing, and switches the wizard off as soon as it does
+   ClientAuthSigner`), which took 7 to 14 seconds in testing, and switches the wizard off as soon as it does.
+   A receiver that hasn't signed after 20 seconds (one that has been running without the credentials, and
+   sometimes the one started at boot) is restarted with `am crash`; the new one signed within 6 seconds
 6. switches the stock launcher off again and puts your launcher back as Home, or leaves the stock
    launcher on if that fails
 7. switches Wireless debugging off again
