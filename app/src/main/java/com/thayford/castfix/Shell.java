@@ -2,6 +2,7 @@ package com.thayford.castfix;
 
 import android.content.Context;
 import android.os.SystemClock;
+import android.provider.Settings;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -25,7 +26,8 @@ import io.github.muntashirakon.adb.AdbStream;
  */
 final class Shell implements Closeable {
     private static final long COMMAND_TIMEOUT_MS = 20_000;
-    private static final long CONNECT_TIMEOUT_MS = 60_000;
+    /** adbd can take a while to bring Wireless debugging up right after boot. */
+    private static final long CONNECT_TIMEOUT_MS = 90_000;
     private static final int ATTEMPTS = 3;
 
     private final Context context;
@@ -44,11 +46,18 @@ final class Shell implements Closeable {
         this.log = log;
     }
 
-    /** Connects to Wireless debugging on this TV; false if it didn't come up within a minute. */
+    /** Connects to Wireless debugging on this TV; false if it didn't come up in time. */
     boolean connect() throws InterruptedException {
         long deadline = SystemClock.elapsedRealtime() + CONNECT_TIMEOUT_MS;
+        boolean reportedMissing = false;
         while (SystemClock.elapsedRealtime() < deadline) {
             int port = AdbPort.find(context, ip, 10_000);
+            if (port <= 0 && !reportedMissing) {
+                // Said once per run: a boot run that never found the port used to end with no hint of why.
+                log.add("no Wireless debugging service on " + ip + " over mDNS yet (adb_wifi_enabled="
+                        + Settings.Global.getInt(context.getContentResolver(), "adb_wifi_enabled", 0) + ")");
+                reportedMissing = true;
+            }
             if (port > 0) {
                 for (String host : new String[]{"127.0.0.1", ip}) {
                     try {

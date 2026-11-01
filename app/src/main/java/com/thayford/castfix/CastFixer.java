@@ -61,7 +61,9 @@ final class CastFixer {
         if (ip == null) return log.result("No Wi-Fi after 90 s; nothing changed.");
         ContentResolver resolver = context.getContentResolver();
         boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
-        Settings.Global.putInt(resolver, ADB_WIFI, 1);
+        if (!debuggingWasOn && !switchDebuggingOn(resolver)) {
+            return log.result("Wireless debugging would not stay on: allow it on this network for good (README).");
+        }
         // Only recorded as ours when it was not already 0, so the uninstall path can put it back instead of
         // silently converting the owner's (and every other paired key's) expiry to "never".
         boolean timeoutWasSet = setAdbTimeoutOnce(resolver);
@@ -284,6 +286,22 @@ final class CastFixer {
         if (packageExists(shell, STOCK_HOME)) enablePackage(shell, STOCK_HOME);
         // "Not the replacement launcher" is not the only bad outcome: Home on the wizard is the crash loop.
         if (after.ownedByWizard()) disableWizard(shell);
+    }
+
+    /**
+     * Switches Wireless debugging on and checks that it stays on. Android switches it straight back off when
+     * Wi-Fi is not connected yet, or when the network was not allowed for good: it then asks "Allow wireless
+     * debugging on this network?" on screen, which nobody answers during a run at boot.
+     */
+    private boolean switchDebuggingOn(ContentResolver resolver) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            Settings.Global.putInt(resolver, ADB_WIFI, 1);
+            SystemClock.sleep(3_000);
+            if (Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1) return true;
+            log.add("Android switched Wireless debugging off again (attempt " + attempt + ")");
+            SystemClock.sleep(5_000);
+        }
+        return false;
     }
 
     /**
