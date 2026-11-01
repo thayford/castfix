@@ -4,8 +4,15 @@ Keeps casting from phones working on a **Chromecast with Google TV** whose setup
 that a replacement launcher can own Home, as [cleanyourtv](https://github.com/Gathin23/cleanyourtv)'s
 debloat lists do. It runs by itself after every restart and needs no computer once it is set up.
 
-Tested on a Chromecast with Google TV HD (boreal), Google TV 14, build UTTC.250917.004. The 4K model
-(sabrina) runs the same build and should behave the same, but hasn't been tried.
+Tested on a Chromecast with Google TV HD (boreal), Google TV 14, build UTTC.250917.004, and on a
+Google TV Streamer (kirkwood), Google TV 14, build UTTK.260317.003. The 4K model (sabrina) runs the
+same build as boreal and should behave the same, but hasn't been tried.
+
+On the Streamer, leaving the setup wizard enabled is not a neutral state: its `RecoveryActivity`
+claims Home, and `system_server` then crash-loops inside `Task.moveToBack` roughly every 47 seconds,
+taking the wizard and SystemUI down with it. Cast Fix therefore enables the wizard for the shortest
+window it can and switches it back off on every exit path, including when a run is killed (see
+[If a run is interrupted](#if-a-run-is-interrupted)).
 
 ![Cast Fix on the TV after two restarts: last run "Casting ready", with the log of each run](docs/screenshot.png)
 
@@ -35,16 +42,30 @@ boot Cast Fix:
 
 1. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
    paired once
-2. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
+2. puts back anything an interrupted earlier run left behind (see below)
+3. checks whether the receiver is failing, by watching what it logs for up to two of its one-minute
+   retries, rather than trusting whatever is still in the log buffer
+4. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
    wizard
-3. waits for the receiver's next retry to log `Created singleton instance of ClientAuthSigner`, which
-   took 7 to 14 seconds in testing (the receiver retries at most once a minute)
-4. switches the wizard and the stock launcher off again and puts your launcher back as Home, or leaves
-   the stock launcher on if that fails
-5. switches Wireless debugging off again
+5. waits for the receiver's next retry to log `Created singleton instance of ClientAuthSigner`, which
+   took 7 to 14 seconds in testing, and switches the wizard off as soon as it appears
+6. switches the stock launcher off again and puts your launcher back as Home, or leaves the stock
+   launcher on if that fails
+7. switches Wireless debugging off again
 
 A run at boot took about 20 seconds in testing. The **Cast Fix** tile in the app list does the same by hand, in
 case casting stops without a restart; when casting already works it only checks and says so.
+
+If the setup wizard is already enabled when a run starts, that is treated as work to finish rather than
+as "already fine": the credentials are checked, and the wizard is switched back off.
+
+### If a run is interrupted
+
+A run records what it is about to change *before* it changes anything, and clears that record when it
+finishes. If the TV sleeps, adb stalls past its retries, or Android kills the app mid-run, the next run —
+after a restart, from the button, or just by opening the app — finds the record and puts the device back
+first: the setup wizard off, the stock launcher back as it was, and Home returned to your launcher. Until
+that happens the app's screen says the last run did not finish.
 
 ## Install (once, from a computer with adb)
 
@@ -70,18 +91,27 @@ adb shell am broadcast -n com.thayford.castfix/.PairReceiver --ei port <pairing 
 ```
 
 The app's screen now reads "Setup: paired · settings permission granted". Leave Developer options on;
-Wireless debugging itself can be off. Restart the TV and a "Cast Fix: Casting ready." message appears
-within a minute.
+Wireless debugging itself can be off.
+
+Android switches Wireless debugging on only on a network it was allowed on for good. The first time it is
+switched on, the TV asks "Allow wireless debugging on this network?": tick **Always allow on this
+network**, then Allow. Allowed only once, the TV asks again at every boot, nobody answers, and the run at
+boot ends with "Wireless debugging would not stay on". The permission belongs to the access point (its
+BSSID), so a mesh node, a repeater or the other band of the same router asks once more.
+
+Restart the TV and a "Cast Fix: Casting ready." message appears within a minute or two.
 
 ## Security
 
 - The app holds an adb key for your TV, so it can do anything `adb shell` can. The key stays in the app's
   private storage, and Wireless debugging is on only for the seconds a run takes.
 - The pairing receiver requires `android.permission.DUMP`, which the adb shell holds and ordinary apps
-  don't, so no other app on the TV can feed it a pairing code.
+  don't, so no other app on the TV can feed it a pairing code. Any app granted DUMP could, so it is a
+  gate rather than a guarantee.
 - It sets `adb_allowed_connection_time` to 0 (the "Disable adb authorization timeout" developer option),
   because a paired key otherwise lapses after 7 days without a connection and restarts can be further
-  apart than that. This applies to every paired key, including your computer's.
+  apart than that. This applies to every paired key, including your computer's. It is only set when it
+  is not already 0, so uninstalling can put the default back.
 - No network use beyond adb over loopback and an mDNS lookup of the TV's own debugging port. No
   analytics, no internet access.
 
@@ -95,6 +125,28 @@ adb shell settings delete global adb_allowed_connection_time     # back to the 7
 and remove "CastFix" under Wireless debugging > Paired devices. Casting then stops working again after the
 next restart, unless you re-enable the setup wizard (and with it the stock launcher).
 
+## Keeping the receiver awake
+
+Android 14's cached-app freezer can stop the Cast receiver when nothing on the TV has it bound, and then
+phones stop discovering the TV. The documented fix is for a **Home app** to bind `/.CastReceiverService`
+with `BIND_AUTO_CREATE`; on a Google TV Streamer the receiver is normally bound by an installed casting app
+(Netflix, Spotify) and stays `vis (service)` with `isFrozen=false`.
+
+Cast Fix deliberately does not do this. It is a repair tool that runs for about twenty seconds and exits;
+holding a permanent binding would make it a background service in all but name, keep the receiver alive
+against the owner's wishes, and stop working the moment Cast Fix is uninstalled. The binding belongs to the
+launcher, which already owns process lifetime and can bind at boot without a foreground service.
+
+To check whether it is a problem on your TV:
+
+```sh
+adb shell dumpsys activity processes | grep -A60 mediashell | grep -E "isFrozen|curProcState"
+adb shell dumpsys activity oom | grep -A2 mediashell
+```
+
+`isFrozen=false` and `vis (service)` mean the receiver is already being kept awake by something.
+
+
 ## Troubleshooting
 
 The screen shows the last result and the last lines of the log; everything also goes to logcat with tag
@@ -104,17 +156,44 @@ The screen shows the last result and the last lines of the log; everything also 
 adb shell settings put global castfix_keep_debugging 1     # settings delete global castfix_keep_debugging to undo
 ```
 
+"Wireless debugging would not stay on" means Android switched it straight back off, almost always because
+the network was not allowed for good (Install, above): switch Wireless debugging on once by hand and tick
+**Always allow on this network**. A Wireless debugging port that mDNS never shows is logged too, with the
+setting's value at the time.
+
 Every adb command has a 20-second limit and is retried up to three times on a fresh connection.
 libadb's `open()` waits for adbd's OKAY without a timeout and can miss it when the answer arrives before
 the wait starts; that hung a run once just after a cold boot.
 
+Two things to know when reading the logs by hand:
+
+- The receiver's state is decided from a **window**, not from a snapshot. The main log buffer on a Google
+  TV Streamer is 256 KiB and the Cast receiver alone fills it in well under an hour, so "no failure line in
+  the buffer" means nothing. Cast Fix watches for two of the receiver's one-minute retries and only calls
+  a silent receiver healthy when it has watched a full window.
+- Timestamps are read as epoch seconds (`logcat -v epoch`), so the check survives midnight, a timezone
+  change, and the clock stepping when NTP syncs after boot. The `MM-DD hh:mm:ss` form is ambiguous across
+  midnight and moves backwards when the clock does.
+
+A third, learned the hard way on the Streamer:
+
+- The line that proves success, `Created singleton instance of ClientAuthSigner`, is logged by the native
+  shell under the tag **`cast_shell`**, not by `cast_ClientAuthCredsFactoryProvisioned`. Filtering by tag
+  misses it entirely and reports "did not load" while the receiver is in fact signing correctly. Cast Fix
+  filters by message text and also treats the retries stopping as success, because a receiver that had
+  already loaded and been restarted does not log the signer again.
+
 ## Build
 
-JDK 17 and Android SDK platform 34:
+JDK 17 and Android SDK platform 34. `local.properties` is not committed; create it with the SDK path:
 
 ```sh
-./gradlew assembleRelease     # app/build/outputs/apk/release/app-release.apk
+echo "sdk.dir=$HOME/Android/Sdk" > local.properties
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew testReleaseUnitTest
 ```
+
+The JDK 17 is required: AGP 8.5.2 does not support newer JDKs, and a system default of 21 or later fails.
 
 ## Credits
 
