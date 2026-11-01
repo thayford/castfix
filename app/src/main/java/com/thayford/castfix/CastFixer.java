@@ -39,6 +39,8 @@ final class CastFixer {
      * leaves room for one missed retry.
      */
     private static final long CREDS_WAIT_MS = 100_000;
+    /** How long a receiver may not answer on 8009 before its log decides instead. */
+    private static final long NO_ANSWER_MS = 15_000;
 
     private final Context context;
     private final FixLog log;
@@ -104,18 +106,18 @@ final class CastFixer {
             return "This TV has no Cast receiver (mediashell), so it is not a Google TV device.";
         }
         boolean setupOn = !hasPackage(disabled, SETUP);
-        ReceiverState.Verdict verdict = ReceiverState.watch(shell, log, CREDS_WAIT_MS);
+        boolean healthy = receiverHealthy(shell);
 
-        if (verdict.healthy() && setupOn) {
+        if (healthy && setupOn) {
             // Not "already fine": on kirkwood an enabled wizard is the crash-loop precondition. This is a
             // repair, and the message must read as one.
-            log.add("receiver healthy (" + verdict + ") but the setup wizard was on; switching it off");
+            log.add("receiver healthy but the setup wizard was on; switching it off");
             disableWizard(shell);
             journal.finish();
             return "Setup wizard switched back off. Casting ready.";
         }
-        if (verdict.healthy()) {
-            log.add("receiver healthy (" + verdict + ")");
+        if (healthy) {
+            log.add("receiver healthy");
             journal.finish();
             return "Casting already works.";
         }
@@ -155,11 +157,16 @@ final class CastFixer {
             wizardOpenedAt = requestedAt;
         }
 
-        long loadedAt = awaitSigner(shell, wizardOpenedAt);
+        long loadedAt = awaitSigner(shell, wizardOpenedAt, CREDS_WAIT_MS);
         // Close the crash-loop window as early as possible, not after the rest of the run.
         disableWizard(shell);
         restoreHome(shell, homeBefore);
         journal.finish();
+        // The receiver keeps the credentials in memory, so they have to hold with the wizard off again.
+        if (loadedAt > 0 && CastHealth.check(5_000) == CastHealth.State.UNSIGNED) {
+            log.add("receiver lost the credentials once the wizard was off");
+            loadedAt = 0;
+        }
         if (loadedAt > 0) {
             log.add("credentials loaded");
             return "Casting ready (credentials loaded).";
@@ -168,8 +175,25 @@ final class CastFixer {
     }
 
     /**
+     * Whether the receiver holds its credentials now. Asked of the receiver first (CastHealth): it signs the
+     * device-auth challenge on 8009 only with its credentials loaded, 256 bytes against 0 without them on boreal
+     * and on kirkwood, and that answer takes well under a second. The log window is the fallback for a receiver
+     * that does not answer on 8009.
+     */
+    private boolean receiverHealthy(Shell shell) throws Exception {
+        CastHealth.State state = CastHealth.check(5_000);
+        if (state != CastHealth.State.UNREACHABLE) {
+            log.add("receiver " + (state == CastHealth.State.SIGNED ? "signs" : "answers with an empty signature"));
+            return state == CastHealth.State.SIGNED;
+        }
+        ReceiverState.Verdict verdict = ReceiverState.watch(shell, log, CREDS_WAIT_MS);
+        log.add("receiver not answering on 8009; its log says " + verdict);
+        return verdict.healthy();
+    }
+
+    /**
      * Waits for the receiver to pick up credentials after the wizard came on, and returns 1 on success, 0 on
-     * failure.
+     * failure. Decided by the receiver's signature while it answers on 8009, by the log otherwise.
      *
      * <p>Ignores anything logged before {@code enabledAt}: the retry that failed just before the wizard was
      * enabled is still in the buffer and would otherwise be read as "the wizard did not help". Uses the same
@@ -177,9 +201,29 @@ final class CastFixer {
      * credentials and stopped retrying does not log the signer again (measured on kirkwood: signature 256 on
      * the 8009 handshake while no singleton line existed in any buffer).
      */
-    private long awaitSigner(Shell shell, long enabledAt) throws Exception {
-        ReceiverState.Verdict verdict = ReceiverState.watch(shell, log, CREDS_WAIT_MS, enabledAt);
-        log.add("receiver after enabling the wizard: " + verdict);
+    private long awaitSigner(Shell shell, long enabledAt, long timeoutMs) throws Exception {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        long noAnswerUntil = SystemClock.elapsedRealtime() + NO_ANSWER_MS;
+        boolean answered = false;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(3_000);
+            CastHealth.State state = CastHealth.check(4_000);
+            if (state == CastHealth.State.SIGNED) {
+                log.add("receiver after enabling the wizard: signs");
+                return 1;
+            }
+            if (state == CastHealth.State.UNSIGNED) answered = true;
+            // A receiver that is (re)starting does not answer for a few seconds; one that never does is read
+            // from its log instead.
+            if (!answered && SystemClock.elapsedRealtime() > noAnswerUntil) break;
+        }
+        if (answered) {
+            log.add("receiver after enabling the wizard: still an empty signature");
+            return 0;
+        }
+        long left = Math.max(0, deadline - SystemClock.elapsedRealtime());
+        ReceiverState.Verdict verdict = ReceiverState.watch(shell, log, left, enabledAt);
+        log.add("receiver after enabling the wizard: " + verdict + " (from its log; 8009 did not answer)");
         return verdict.healthy() ? 1 : 0;
     }
 

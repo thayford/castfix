@@ -43,12 +43,13 @@ boot Cast Fix:
 1. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
    paired once
 2. puts back anything an interrupted earlier run left behind (see below)
-3. checks whether the receiver is failing, by watching what it logs for up to two of its one-minute
-   retries, rather than trusting whatever is still in the log buffer
+3. checks whether the receiver holds its credentials by asking it, on `127.0.0.1:8009`, to sign the
+   device-auth challenge phones send: an empty signature means they are missing. Only a receiver that does
+   not answer there is judged by watching what it logs for up to two of its one-minute retries
 4. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
    wizard
-5. waits for the receiver's next retry to log `Created singleton instance of ClientAuthSigner`, which
-   took 7 to 14 seconds in testing, and switches the wizard off as soon as it appears
+5. waits until the receiver signs (or, if it does not answer on 8009, logs `Created singleton instance of
+   ClientAuthSigner`), which took 7 to 14 seconds in testing, and switches the wizard off as soon as it does
 6. switches the stock launcher off again and puts your launcher back as Home, or leaves the stock
    launcher on if that fails
 7. switches Wireless debugging off again
