@@ -18,6 +18,10 @@ public class CastFixService extends Service {
     static final String EXTRA_TRIGGER = "trigger";
     static final String ACTION_DONE = "com.thayford.castfix.DONE";
     private static final String CHANNEL = "castfix";
+    /**
+     * Held for the length of a run. Claimed before startForeground so a second startForegroundService cannot
+     * post a second notification while doing no work.
+     */
     private static final AtomicBoolean RUNNING = new AtomicBoolean();
 
     static boolean isRunning() {
@@ -26,6 +30,12 @@ public class CastFixService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!RUNNING.compareAndSet(false, true)) {
+            // A run is already in progress: the notification that is up belongs to it, so this start must
+            // not touch it. Release nothing, because the running thread owns the flag.
+            stopSelfResult(startId);
+            return START_NOT_STICKY;
+        }
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Cast Fix", NotificationManager.IMPORTANCE_LOW));
         Notification notification = new Notification.Builder(this, CHANNEL)
@@ -35,7 +45,6 @@ public class CastFixService extends Service {
                 .setOngoing(true)
                 .build();
         startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        if (!RUNNING.compareAndSet(false, true)) return START_NOT_STICKY; // the run in progress stops the service
         String trigger = intent == null ? null : intent.getStringExtra(EXTRA_TRIGGER);
         new Thread(() -> {
             String result;

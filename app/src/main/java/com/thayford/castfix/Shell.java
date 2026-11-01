@@ -74,18 +74,64 @@ final class Shell implements Closeable {
 
     /** Runs a shell command and returns its output, reconnecting and retrying if it stalls. */
     String run(String command) throws Exception {
+        return runChecked(command).output;
+    }
+
+    /**
+     * Runs a shell command and returns its output plus its exit status. adbd's legacy shell stream merges
+     * stderr into stdout, so a refused command's message arrives as output; the status is what tells a
+     * failure apart from an empty success, which matters because `pm enable` on a package that does not
+     * exist prints an error and would otherwise look like it worked.
+     */
+    Result runChecked(String command) throws Exception {
+        // The marker shares the shell, so it is subject to the same retry as the command it reports on.
+        String marked = command + "\n__castfix_rc=$?; echo \"__castfix_rc=${__castfix_rc}\"";
         for (int attempt = 1; ; attempt++) {
             AdbManager current = adb;
-            Future<String> result = pool.submit(() -> exec(current, command));
+            Future<String> result = pool.submit(() -> exec(current, marked));
+            String raw;
             try {
-                return result.get(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                raw = result.get(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             } catch (TimeoutException | ExecutionException e) {
                 log.add("adb stalled on `" + brief(command) + "` (" + attempt + "/" + ATTEMPTS + "): " + describe(e));
                 closeQuietly(current);
                 result.cancel(true);
                 if (attempt == ATTEMPTS) throw new IOException("adb kept stalling on `" + brief(command) + "`");
                 if (!connect()) throw new IOException("could not reconnect to adb");
+                continue;
             }
+            int marker = raw.lastIndexOf(RC_MARKER);
+            if (marker < 0) return new Result(raw, -1); // interrupted mid-command; caller sees output only
+            int status = (int) ReceiverState.parseLong(raw.substring(marker + RC_MARKER.length()));
+            return new Result(raw.substring(0, marker), status);
+        }
+    }
+
+    private static final String RC_MARKER = "__castfix_rc=";
+
+    /** Output of a shell command and what it exited with (-1 when the status did not come back). */
+    static final class Result {
+        final String output;
+        final int status;
+
+        Result(String output, int status) {
+            this.output = output;
+            this.status = status;
+        }
+
+        boolean ok() {
+            // -1 means the stream ended before the marker: treat unknown as success and let the caller's
+            // own state check decide, except where a status was actually reported.
+            return status == 0 || status == -1;
+        }
+
+        /** The error text the shell printed, trimmed to one line, or "" for a successful command. */
+        String problem() {
+            if (ok()) return "";
+            String text = output.trim();
+            int newline = text.indexOf('\n');
+            if (newline > 0) text = text.substring(0, newline);
+            return text.isEmpty() ? "exit " + status : text;
         }
     }
 

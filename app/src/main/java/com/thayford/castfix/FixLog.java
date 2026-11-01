@@ -31,8 +31,18 @@ final class FixLog {
         Log.i(TAG, line);
         List<String> lines = tail(KEEP_LINES - 1);
         lines.add(new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date()) + "  " + line);
+        // Written through a temp file and renamed: a kill mid-write must not truncate the log the owner needs
+        // to diagnose exactly that kind of failure.
+        File temp = new File(file.getParentFile(), "castfix.log.tmp");
         try {
-            Files.write(file.toPath(), lines, StandardCharsets.UTF_8);
+            Files.write(temp.toPath(), lines, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp.toPath(), file.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temp.toPath(), file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             Log.w(TAG, "could not write the log", e);
         }
