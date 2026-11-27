@@ -7,9 +7,10 @@ restart and whenever the Cast receiver loses its credentials without one, and ne
 set up.
 
 Tested on a Chromecast with Google TV HD (boreal), Google TV 14, build UTTC.250917.004. The 4K model
-(sabrina) runs the same build and should behave the same, but hasn't been tried. Google TV Streamer
-(kirkwood, Google TV 14, UTTK.260317.003) support comes from a contributor's testing on one (Credits); the
-1.3 code hasn't been run on a kirkwood yet.
+(sabrina) runs the same build and should behave the same, but hasn't been tried. Also run on a Google TV
+Streamer (kirkwood, Google TV 14, build UTTK.260317.003), installed over 1.0: a full run recovered the
+receiver's credentials in 24 seconds, put Home back, and left the wizard off. With the wizard switched on by
+hand, the screen warned about it and the fix put the TV back as it should be.
 
 ![Cast Fix on the TV after two restarts: last run "Casting ready", with the log of each run](docs/screenshot.png)
 
@@ -42,16 +43,19 @@ minutes it sends the receiver the same authentication challenge a phone does, ov
 
 1. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
    paired once
-2. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
-   wizard
-3. asks the receiver every 3 seconds whether it signs now (or, while it doesn't answer on its port, reads
+2. puts back anything an interrupted earlier run left behind (see below)
+3. asks the receiver whether it can already sign, with the same handshake a phone makes. If it can, there
+   is nothing to do and the run ends there
+4. otherwise switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then
+   the setup wizard
+5. asks the receiver every 3 seconds whether it signs now (or, while it doesn't answer on its port, reads
    its log for `Created singleton instance of ClientAuthSigner`). It usually does within seconds.
-4. if it still hasn't after 20 seconds, restarts the receiver (`am crash`) while the wizard is on. A
+6. if it still hasn't after 20 seconds, restarts the receiver (`am crash`) while the wizard is on. A
    receiver that has run for a while without its credentials can keep signing empty even after the wizard
    answers it; restarted, it signed within 6 seconds. One that signs is never restarted.
-5. switches the wizard and the stock launcher off again, puts your launcher back as Home (or leaves the
+7. switches the wizard and the stock launcher off again, puts your launcher back as Home (or leaves the
    stock launcher on if that fails), and checks that the receiver still signs
-6. switches Wireless debugging off again
+8. switches Wireless debugging off again
 
 Every change is recorded before it is made. If a run dies halfway (the app killed, adb stalling, the TV
 going to sleep), the next start puts things back first: the setup wizard off, then Home. That start is the
@@ -62,12 +66,23 @@ A wizard someone else left on is switched off at the end of a run, but only on a
 replacement launcher, and never while the wizard still owns the saved Wi-Fi network: Android deletes such a
 network when the wizard is disabled, which takes a TV without Ethernet off Wi-Fi.
 
+That is also why a signing receiver alone does not make a run say "Casting already works.": on the Streamer
+a wizard left on with your own launcher owning Home is the state that crash-loops `system_server`, so the
+run switches it off first. On a stock setup, where the wizard stays on and casts, the run leaves it alone.
+
 A run at boot took about 20 seconds in testing, and a run after a receiver restart about 15. The **Cast
 Fix** tile in the app list does the same by hand; when casting already works it only checks and says so.
 
 The 15-minute check is a JobScheduler job, which Android would hold back for hours while the TV sleeps,
 so the first run that reaches adb turns battery optimization off for the app (`dumpsys deviceidle
 whitelist +com.thayford.castfix`). That also lets the check start the fix from the background.
+
+### If a boot run loses to the network
+
+A run started at boot can find Wi-Fi still coming up. If the first attempt still fails, one more attempt
+runs a minute later. That covers the ordinary case where the radio associates late, without leaving the TV
+without credentials until someone opens the app by hand. Installing an update also triggers a run, because
+an update replaces the running process and would otherwise leave casting broken until the next restart.
 
 ## Two more fixes (1.2)
 
@@ -148,7 +163,8 @@ Allowed only once, Android asks again each time Cast Fix switches Wireless debug
 straight back off while nobody answers, so runs at boot fail. The permission belongs to the access point
 (its BSSID): a mesh node, a repeater or the router's other band asks again.
 
-The app's screen now reads "Setup: paired · settings permission granted". Leave Developer options on;
+The app's screen now reads "Setup: paired · settings permission granted · adb-only permissions granted"
+(or "pending (next adb run)" until the first run has granted them). Leave Developer options on;
 Wireless debugging itself can be off. Restart the TV and a "Cast Fix: Casting ready." message appears
 within a minute.
 
@@ -163,9 +179,11 @@ within a minute.
   during casts. It only ever restores the ones it switched off, also after a crash or restart.
 - It sets `adb_allowed_connection_time` to 0 (the "Disable adb authorization timeout" developer option),
   because a paired key otherwise lapses after 7 days without a connection and restarts can be further
-  apart than that. This applies to every paired key, including your computer's.
+  apart than that. This applies to every paired key, including your computer's. It is only set when it is
+  not already 0, so uninstalling can put the default back.
 - No network use beyond adb over loopback, an mDNS lookup of the TV's own debugging port, and the Cast
-  authentication challenge to `127.0.0.1:8009`. No analytics, no internet access.
+  authentication challenge to `127.0.0.1:8009`, which is read-only and only asks whether the reply carries
+  a signature. No analytics, no internet access.
 
 ## Uninstall
 
@@ -192,6 +210,29 @@ it off again: see "Always allow on this network" under Install.
 Every adb command has a 20-second limit and is retried up to three times on a fresh connection.
 libadb's `open()` waits for adbd's OKAY without a timeout and can miss it when the answer arrives before
 the wait starts; that hung a run once just after a cold boot.
+
+Two things to know when reading the logs by hand:
+
+- The receiver's state is **not decided from the log** while it answers on its port. It is decided by making
+  the device-auth handshake a phone makes, against the TV's own port 8009 on loopback: a signed reply means
+  the credentials are in memory right now. The check is read-only, takes well under a second, and is the
+  only one that describes the device as it is rather than as some earlier moment. The log is read only when
+  the receiver does not answer there at all.
+- The log is still written for diagnosis, with epoch timestamps (`logcat -v epoch`) so it survives
+  midnight, a timezone change and the clock stepping when NTP syncs after boot.
+
+Why the log could not answer the question on its own, learned on the Streamer:
+
+- The line that proves success, `Created singleton instance of ClientAuthSigner`, is logged by the native
+  shell under the tag **`cast_shell`**, not by `cast_ClientAuthCredsFactoryProvisioned`, so filtering by
+  tag misses it entirely.
+- The main buffer is 256 KiB and the receiver fills it in under a day, while it loads its credentials only
+  once. Come back the next evening and the load line has rolled out while the credentials are still in
+  memory - and a receiver that already holds them logs nothing at all.
+- Just after the setup wizard is enabled - the one moment the answer matters - the retry that failed a
+  second earlier is still in the buffer, and both timestamps truncate to the same epoch second. The log
+  cannot tell that failure from a fresh one, which is what made a run at boot give up two seconds after
+  enabling the wizard and report failure while the receiver was still 29 seconds from its next attempt.
 
 ## Build
 

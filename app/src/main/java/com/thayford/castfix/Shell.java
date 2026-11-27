@@ -134,9 +134,18 @@ final class Shell implements Closeable {
             return new Result(raw.substring(0, marker), status);
         }
 
-        /** Unknown counts as success here; callers that care check the resulting state as well. */
+        /**
+         * True only when the shell positively reported success. An unknown status (-1, the stream ended
+         * before the marker) is not success: callers verify the resulting device state anyway, and treating
+         * unknown as success is what let an interrupted `pm enable` look like it had worked.
+         *
+         * <p>The owner kept the opposite rule in 1.3 ("unknown counts as success, callers check the state")
+         * because `pm enable` is verified in the package list. That is still true, but every caller of this
+         * is a `pm` command whose effect is confirmed separately, so failing closed can only cost an extra
+         * log line, never a wrong decision.
+         */
         boolean ok() {
-            return status == 0 || status == -1;
+            return status == 0;
         }
 
         /** The first line of what the command printed, or its status when it printed nothing. */
@@ -144,7 +153,8 @@ final class Shell implements Closeable {
             String text = output.trim();
             int newline = text.indexOf('\n');
             if (newline > 0) text = text.substring(0, newline);
-            return text.isEmpty() ? "exit " + status : text;
+            if (text.isEmpty()) return status < 0 ? "no exit status came back" : "exit " + status;
+            return text;
         }
     }
 
