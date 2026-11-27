@@ -26,9 +26,6 @@ final class FixLog {
 
     private final File file;
     private final SharedPreferences prefs;
-    /** Mirrors the file, so a line costs an append rather than a read plus a rewrite of the whole log. */
-    private final List<String> lines = new ArrayList<>();
-    private boolean loaded = false;
 
     FixLog(Context context) {
         file = new File(context.getFilesDir(), "castfix.log");
@@ -37,9 +34,11 @@ final class FixLog {
 
     synchronized void add(String line) {
         Log.i(TAG, line);
-        load();
-        lines.add(stamp.format(new Date()) + "  " + line);
-        while (lines.size() > KEEP_LINES) lines.remove(0);
+        // Read the file every time, never a cached copy: this class is instantiated in several processes
+        // (GuardService lives for hours, a run and the screen come and go), and each instance rewrites the
+        // whole file here. Writing a snapshot taken when the instance was built silently deletes every line
+        // another instance appended since, which lost runs behind the guard's chatter.
+        List<String> lines = append(tail(KEEP_LINES - 1), stamp.format(new Date()) + "  " + line, KEEP_LINES);
         // Through a temp file and a rename, so a kill mid-write can't truncate the log needed to diagnose
         // exactly that kind of failure (PR #1, svaldivia12).
         File temp = new File(file.getParentFile(), "castfix.log.tmp");
@@ -56,16 +55,22 @@ final class FixLog {
         }
     }
 
-    /** Reads the file once into memory; every later line is an append. */
-    private void load() {
-        if (loaded) return;
-        loaded = true;
-        if (!file.exists()) return;
-        try {
-            lines.addAll(Files.readAllLines(file.toPath(), StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            Log.w(TAG, "could not read the log", e);
-        }
+    /**
+     * Appends one stamped line, dropping the oldest so the result fits {@code keep}.
+     *
+     * <p>Pure so the property that broke can be tested without Android: a line already in the list belongs to
+     * some other instance that wrote it, and must survive. Trimming only ever discards the oldest entries.
+     *
+     * @param existing lines read from the file, oldest first
+     * @param stamped  the line to add, already timestamped
+     * @param keep     how many lines to keep
+     */
+    static List<String> append(List<String> existing, String stamped, int keep) {
+        List<String> lines = new ArrayList<>(existing);
+        // Make room before adding, so the new line is never the one trimmed off a full log.
+        while (lines.size() >= keep) lines.remove(0);
+        lines.add(stamped);
+        return lines;
     }
 
     /** Logs the outcome of a run and keeps it for the screen; returns it for chaining. */
@@ -110,7 +115,14 @@ final class FixLog {
     }
 
     synchronized List<String> tail(int count) {
-        load();
+        List<String> lines = new ArrayList<>();
+        if (file.exists()) {
+            try {
+                lines.addAll(Files.readAllLines(file.toPath(), StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                Log.w(TAG, "could not read the log", e);
+            }
+        }
         return new ArrayList<>(lines.subList(Math.max(0, lines.size() - count), lines.size()));
     }
 }
