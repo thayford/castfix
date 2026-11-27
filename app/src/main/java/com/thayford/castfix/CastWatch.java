@@ -34,10 +34,12 @@ public class CastWatch extends JobService {
         GuardService.start(this); // brings the guard back if Android stopped it
         if (CastFixService.isRunning()) return false;
         new Thread(() -> {
-            if (CastProbe.signed() == Boolean.FALSE) {
+            // A run that died (RunJournal) is put back here too, at the latest 15 minutes later.
+            boolean unfinished = new RunJournal(this).isActive();
+            if (unfinished || CastProbe.signed() == Boolean.FALSE) {
                 try {
-                    startForegroundService(new Intent(this, CastFixService.class)
-                            .putExtra(CastFixService.EXTRA_TRIGGER, "Cast receiver lost its credentials"));
+                    startForegroundService(new Intent(this, CastFixService.class).putExtra(CastFixService.EXTRA_TRIGGER,
+                            unfinished ? "recovery" : "Cast receiver lost its credentials"));
                 } catch (IllegalStateException e) {
                     // ForegroundServiceStartNotAllowedException while battery optimization is still on
                     new FixLog(this).add("casting broke, but the fix can't start from the background: " + e);

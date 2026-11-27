@@ -11,8 +11,8 @@ android {
         // Wireless debugging (adb over TLS, pairing codes) exists from Android 11.
         minSdk 30
         targetSdk 34
-        versionCode 3
-        versionName '1.2'
+        versionCode 4
+        versionName '1.3'
         // Chromecast with Google TV runs a 32-bit userspace; the other ABIs only add Conscrypt copies.
         ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
     }
@@ -46,4 +46,7 @@ dependencies {
     // Self-signed certificate for the app's adb key; same BouncyCastle line libadb already pulls in.
     implementation 'org.bouncycastle:bcpkix-jdk15to18:1.81'
     implementation 'androidx.annotation:annotation:1.9.1'
+
+    // Plain JVM tests for the logic that needs no device (from PR #1); not in the APK.
+    testImplementation 'junit:junit:4.13.2'
 }

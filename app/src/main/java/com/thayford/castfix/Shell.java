@@ -2,6 +2,7 @@ package com.thayford.castfix;
 
 import android.content.Context;
 import android.os.SystemClock;
+import android.provider.Settings;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -25,7 +26,10 @@ import io.github.muntashirakon.adb.AdbStream;
  */
 final class Shell implements Closeable {
     private static final long COMMAND_TIMEOUT_MS = 20_000;
-    private static final long CONNECT_TIMEOUT_MS = 60_000;
+    private static final long FIRST_TRY_TIMEOUT_MS = 10_000;
+    /** adbd can take a while to bring Wireless debugging up right after boot (PR #3, lukasmeggle). */
+    private static final long CONNECT_TIMEOUT_MS = 90_000;
+    private static final String RC_MARKER = "__castfix_rc=";
     private static final int ATTEMPTS = 3;
 
     private final Context context;
@@ -44,11 +48,18 @@ final class Shell implements Closeable {
         this.log = log;
     }
 
-    /** Connects to Wireless debugging on this TV; false if it didn't come up within a minute. */
+    /** Connects to Wireless debugging on this TV; false if it didn't come up in time. */
     boolean connect() throws InterruptedException {
         long deadline = SystemClock.elapsedRealtime() + CONNECT_TIMEOUT_MS;
+        boolean reportedMissing = false;
         while (SystemClock.elapsedRealtime() < deadline) {
             int port = AdbPort.find(context, ip, 10_000);
+            if (port <= 0 && !reportedMissing) {
+                // Once per run: a boot run that never found the port used to end with no hint of why.
+                log.add("no Wireless debugging service over mDNS yet (adb_wifi_enabled="
+                        + Settings.Global.getInt(context.getContentResolver(), "adb_wifi_enabled", 0) + ")");
+                reportedMissing = true;
+            }
             if (port > 0) {
                 for (String host : new String[]{"127.0.0.1", ip}) {
                     try {
@@ -78,7 +89,9 @@ final class Shell implements Closeable {
             AdbManager current = adb;
             Future<String> result = pool.submit(() -> exec(current, command));
             try {
-                return result.get(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                // Every command here answers in a second or two, so a first try that hasn't in 10 s is the
+                // lost wakeup, not a slow command; later tries get the full limit.
+                return result.get(attempt == 1 ? FIRST_TRY_TIMEOUT_MS : COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             } catch (TimeoutException | ExecutionException e) {
                 log.add("adb stalled on `" + brief(command) + "` (" + attempt + "/" + ATTEMPTS + "): " + describe(e));
                 closeQuietly(current);
@@ -86,6 +99,52 @@ final class Shell implements Closeable {
                 if (attempt == ATTEMPTS) throw new IOException("adb kept stalling on `" + brief(command) + "`");
                 if (!connect()) throw new IOException("could not reconnect to adb");
             }
+        }
+    }
+
+    /**
+     * Runs a command and also returns its exit status. adbd's shell stream merges stderr into stdout, so a
+     * refused `pm enable` prints its error as ordinary output and would otherwise look like it worked.
+     * Only used where the status matters, so the other commands stay exactly as they were
+     * (from PR #1, svaldivia12).
+     */
+    Result runChecked(String command) throws Exception {
+        return Result.parse(run(command + "; echo " + RC_MARKER + "$?"));
+    }
+
+    /** A command's output and exit status (-1 when the status didn't come back). */
+    static final class Result {
+        final String output;
+        final int status;
+
+        Result(String output, int status) {
+            this.output = output;
+            this.status = status;
+        }
+
+        static Result parse(String raw) {
+            int marker = raw.lastIndexOf(RC_MARKER);
+            if (marker < 0) return new Result(raw, -1);
+            int status;
+            try {
+                status = Integer.parseInt(raw.substring(marker + RC_MARKER.length()).trim());
+            } catch (NumberFormatException e) {
+                status = -1;
+            }
+            return new Result(raw.substring(0, marker), status);
+        }
+
+        /** Unknown counts as success here; callers that care check the resulting state as well. */
+        boolean ok() {
+            return status == 0 || status == -1;
+        }
+
+        /** The first line of what the command printed, or its status when it printed nothing. */
+        String problem() {
+            String text = output.trim();
+            int newline = text.indexOf('\n');
+            if (newline > 0) text = text.substring(0, newline);
+            return text.isEmpty() ? "exit " + status : text;
         }
     }
 

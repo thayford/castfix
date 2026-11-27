@@ -7,7 +7,9 @@ import android.util.Log;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -31,8 +33,17 @@ final class FixLog {
         Log.i(TAG, line);
         List<String> lines = tail(KEEP_LINES - 1);
         lines.add(new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date()) + "  " + line);
+        // Through a temp file and a rename, so a kill mid-write can't truncate the log needed to diagnose
+        // exactly that kind of failure (PR #1, svaldivia12).
+        File temp = new File(file.getParentFile(), "castfix.log.tmp");
         try {
-            Files.write(file.toPath(), lines, StandardCharsets.UTF_8);
+            Files.write(temp.toPath(), lines, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             Log.w(TAG, "could not write the log", e);
         }

@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(Color.rgb(12, 18, 24));
 
         root.addView(text("Cast Fix", 34, Color.WHITE));
-        root.addView(text("Lets phones cast to this Chromecast while the setup wizard stays off for your own "
+        root.addView(text("Lets phones cast to this Chromecast or Google TV Streamer while the setup wizard stays off for your own "
                 + "launcher. It runs by itself after every restart and whenever the Cast receiver loses its "
                 + "credentials (checked every 15 minutes); use the button if casting stops anyway. While a "
                 + "cast is on screen it pauses accessibility services such as Key Mapper (they keep Disney+'s "
@@ -90,6 +90,8 @@ public class MainActivity extends Activity {
         super.onResume();
         registerReceiver(done, new IntentFilter(CastFixService.ACTION_DONE), Context.RECEIVER_NOT_EXPORTED);
         refresh();
+        // If a run died midway, put things back now, while the owner is looking (PR #1, svaldivia12).
+        if (!CastFixService.isRunning() && new CastFixer(this).needsRecovery()) start("recovery");
     }
 
     @Override
@@ -99,6 +101,10 @@ public class MainActivity extends Activity {
     }
 
     private void start(String trigger) {
+        if (CastFixService.isRunning()) {
+            status.setText("A run is already in progress.");
+            return;
+        }
         startForegroundService(new Intent(this, CastFixService.class)
                 .putExtra(CastFixService.EXTRA_TRIGGER, trigger));
         run.setEnabled(false);
@@ -110,7 +116,8 @@ public class MainActivity extends Activity {
         boolean busy = CastFixService.isRunning();
         run.setEnabled(!busy);
         run.setText(busy ? "Working, about a minute" : "Fix casting now");
-        status.setText(busy ? "Running…" : "Last run: " + log.lastResult());
+        String recovery = new CastFixer(this).recoveryNote();
+        status.setText(busy ? "Running…" : recovery.isEmpty() ? "Last run: " + log.lastResult() : recovery);
         boolean granted = checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
                 == PackageManager.PERMISSION_GRANTED;
         SharedPreferences guard = getSharedPreferences("guard", MODE_PRIVATE);

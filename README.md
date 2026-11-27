@@ -1,12 +1,15 @@
 # Cast Fix
 
-Keeps casting from phones working on a **Chromecast with Google TV** whose setup wizard is disabled so
-that a replacement launcher can own Home, as [cleanyourtv](https://github.com/Gathin23/cleanyourtv)'s
-debloat lists do. It runs by itself after every restart and whenever the Cast receiver loses its
-credentials without one, and needs no computer once it is set up.
+Keeps casting from phones working on a **Chromecast with Google TV** or **Google TV Streamer** whose setup
+wizard is disabled so that a replacement launcher can own Home, as
+[cleanyourtv](https://github.com/Gathin23/cleanyourtv)'s debloat lists do. It runs by itself after every
+restart and whenever the Cast receiver loses its credentials without one, and needs no computer once it is
+set up.
 
 Tested on a Chromecast with Google TV HD (boreal), Google TV 14, build UTTC.250917.004. The 4K model
-(sabrina) runs the same build and should behave the same, but hasn't been tried.
+(sabrina) runs the same build and should behave the same, but hasn't been tried. Google TV Streamer
+(kirkwood, Google TV 14, UTTK.260317.003) support comes from a contributor's testing on one (Credits); the
+1.3 code hasn't been run on a kirkwood yet.
 
 ![Cast Fix on the TV after two restarts: last run "Casting ready", with the log of each run](docs/screenshot.png)
 
@@ -41,11 +44,23 @@ minutes it sends the receiver the same authentication challenge a phone does, ov
    paired once
 2. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
    wizard
-3. waits for the receiver's next retry to log `Created singleton instance of ClientAuthSigner`, which
-   took 7 to 14 seconds in testing (the receiver retries at most once a minute)
-4. switches the wizard and the stock launcher off again and puts your launcher back as Home, or leaves
-   the stock launcher on if that fails
-5. switches Wireless debugging off again
+3. asks the receiver every 3 seconds whether it signs now (or, while it doesn't answer on its port, reads
+   its log for `Created singleton instance of ClientAuthSigner`). It usually does within seconds.
+4. if it still hasn't after 20 seconds, restarts the receiver (`am crash`) while the wizard is on. A
+   receiver that has run for a while without its credentials can keep signing empty even after the wizard
+   answers it; restarted, it signed within 6 seconds. One that signs is never restarted.
+5. switches the wizard and the stock launcher off again, puts your launcher back as Home (or leaves the
+   stock launcher on if that fails), and checks that the receiver still signs
+6. switches Wireless debugging off again
+
+Every change is recorded before it is made. If a run dies halfway (the app killed, adb stalling, the TV
+going to sleep), the next start puts things back first: the setup wizard off, then Home. That start is the
+next boot, the 15-minute check, or opening the app. On a Google TV Streamer this matters most, because
+there a wizard left on makes system_server crash-loop about every 47 seconds.
+
+A wizard someone else left on is switched off at the end of a run, but only on a TV set up with a
+replacement launcher, and never while the wizard still owns the saved Wi-Fi network: Android deletes such a
+network when the wizard is disabled, which takes a TV without Ethernet off Wi-Fi.
 
 A run at boot took about 20 seconds in testing, and a run after a receiver restart about 15. The **Cast
 Fix** tile in the app list does the same by hand; when casting already works it only checks and says so.
@@ -109,15 +124,15 @@ pairing code, `adb pair`, `adb connect`). Download `castfix-<version>.apk` from
 [Releases](../../releases), or build it (below), then:
 
 ```sh
-adb install castfix-1.2.apk
+adb install castfix-1.3.apk
 adb shell pm grant com.thayford.castfix android.permission.WRITE_SECURE_SETTINGS
 adb shell dumpsys deviceidle whitelist +com.thayford.castfix    # the first run does this too
 adb shell am start -n com.thayford.castfix/.MainActivity    # once, or Android never sends it boot events
 ```
 
 If `adb install` hangs (Android 14 can wait for an on-screen confirmation), `adb push` the APK to
-`/data/local/tmp/` and run `adb shell pm install -r /data/local/tmp/castfix-1.2.apk` instead. Updating
-from 1.0 or 1.1 the same way keeps the pairing, and the 15-minute check and the guard start without
+`/data/local/tmp/` and run `adb shell pm install -r /data/local/tmp/castfix-1.3.apk` instead. Updating
+from 1.0, 1.1 or 1.2 the same way keeps the pairing, and the 15-minute check and the guard start without
 opening the app.
 
 Then pair the app itself. On the TV open Developer options > Wireless debugging > **Pair device with
@@ -127,6 +142,11 @@ pairing code**, and while that dialog is still open run, with the port and code 
 adb shell am broadcast -n com.thayford.castfix/.PairReceiver --ei port <pairing port> --es code <code>
 # Broadcast completed: result=0, data="paired"
 ```
+
+When the TV asks "Allow wireless debugging on this network?", tick **Always allow on this network**.
+Allowed only once, Android asks again each time Cast Fix switches Wireless debugging on, and switches it
+straight back off while nobody answers, so runs at boot fail. The permission belongs to the access point
+(its BSSID): a mesh node, a repeater or the router's other band asks again.
 
 The app's screen now reads "Setup: paired · settings permission granted". Leave Developer options on;
 Wireless debugging itself can be off. Restart the TV and a "Cast Fix: Casting ready." message appears
@@ -166,6 +186,9 @@ The screen shows the last result and the last lines of the log; everything also 
 adb shell settings put global castfix_keep_debugging 1     # settings delete global castfix_keep_debugging to undo
 ```
 
+"Wireless debugging would not stay on: allow it on this network for good" means Android kept switching
+it off again: see "Always allow on this network" under Install.
+
 Every adb command has a 20-second limit and is retried up to three times on a fresh connection.
 libadb's `open()` waits for adbd's OKAY without a timeout and can miss it when the answer arrives before
 the wait starts; that hung a run once just after a cold boot.
@@ -175,10 +198,23 @@ the wait starts; that hung a run once just after a cold boot.
 JDK 17 and Android SDK platform 34:
 
 ```sh
-./gradlew assembleRelease     # app/build/outputs/apk/release/app-release.apk
+./gradlew testReleaseUnitTest assembleRelease     # app/build/outputs/apk/release/app-release.apk
 ```
 
+The unit tests cover the logic that needs no TV: Home classification, shell exit codes and the remote
+watchdog's reading of the Bluetooth dump. GitHub Actions runs them and the build on every push and pull
+request.
+
 ## Credits
+
+- Contributors to 1.3, from their pull requests:
+  - [Sebastián Valdivia Loyola](https://github.com/svaldivia12) (#1): Google TV Streamer (kirkwood)
+    support, the recovery of interrupted runs, Home read from the resolver, exit codes for `pm`, the log
+    filter fix, safe log writes, the unit tests and the CI workflow
+  - [lukasmeggle](https://github.com/lukasmeggle) (#2, #3): restarting the receiver when the wizard alone
+    doesn't bring its credentials back, and noticing when Wireless debugging won't stay on
+- [adn0liva/chromecast-hd-remote-fix](https://github.com/adn0liva/chromecast-hd-remote-fix) documented the
+  empty-accept-list remote fault the watchdog also checks for.
 
 - [libadb-android](https://github.com/MuntashirAkon/libadb-android) by Muntashir Al-Islam (used under
   Apache-2.0), [Conscrypt](https://github.com/google/conscrypt) (Apache-2.0) and

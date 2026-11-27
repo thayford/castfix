@@ -49,9 +49,14 @@ final class SelfAdb {
             if (ip == null) throw new Unavailable("No Wi-Fi after " + wifiWaitMs / 1000 + " s; nothing changed.");
             ContentResolver resolver = context.getContentResolver();
             boolean debuggingWasOn = Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1;
-            Settings.Global.putInt(resolver, ADB_WIFI, 1);
+            if (!debuggingWasOn && !switchDebuggingOn(resolver, log)) {
+                throw new Unavailable("Wireless debugging would not stay on: allow it on this network for good (README).");
+            }
             // A paired key otherwise lapses after 7 days without a connection, and restarts can be further apart.
-            Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
+            // Written only when it isn't already 0 (PR #1, svaldivia12).
+            if (Settings.Global.getLong(resolver, "adb_allowed_connection_time", -1L) != 0L) {
+                Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
+            }
             try (Shell shell = new Shell(context, ip, log)) {
                 if (!shell.connect()) throw new Unavailable("Could not reach Wireless debugging on this TV.");
                 grantMissing(context, shell, log);
@@ -64,6 +69,23 @@ final class SelfAdb {
                 }
             }
         }
+    }
+
+    /**
+     * Switches Wireless debugging on and checks that it stays on. Android switches it straight back off when
+     * the network was allowed only once: it then asks "Allow wireless debugging on this network?" on screen,
+     * which nobody answers during a run at boot, least of all on a TV used without a screen.
+     * From PR #3 by lukasmeggle.
+     */
+    private static boolean switchDebuggingOn(ContentResolver resolver, FixLog log) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            Settings.Global.putInt(resolver, ADB_WIFI, 1);
+            SystemClock.sleep(3_000);
+            if (Settings.Global.getInt(resolver, ADB_WIFI, 0) == 1) return true;
+            log.add("Android switched Wireless debugging off again (attempt " + attempt + ")");
+            SystemClock.sleep(5_000);
+        }
+        return false;
     }
 
     /** True when the permissions only adb can give (beyond WRITE_SECURE_SETTINGS) are all in place. */
