@@ -106,6 +106,45 @@ public class RemoteWatchTest {
         assertFalse(status.fault());
     }
 
+    /** The same dump, with a DUAL-mode pair of headphones bonded alongside the two LE remotes. */
+    private static String dumpWithDualHeadphones(String inputDevices, String nativeHid, int acceptList,
+            String connector) {
+        return dump("ON", inputDevices, nativeHid, acceptList, connector)
+                // bond list entries are read in order, so this has to sit with the others
+                .replace("    00:11:22:33:CC:03 [BR/EDR] Headphones\n",
+                        "    00:11:22:33:CC:03 [BR/EDR] Headphones\n"
+                                + "    00:11:22:33:DD:04 [ DUAL ] Xiaomi Buds 6\n");
+    }
+
+    private static final String WITH_DUAL_INPUT =
+            BOTH_REGISTERED + "shim::legacy::hid   2: addr:xx:xx:xx:xx:dd:04\n";
+
+    @Test
+    public void dualModeHeadphonesAreNotTreatedAsAnLeRemote() {
+        // Found on a kirkwood: the buds are [DUAL], idle most of the time by design, and the HID dump lists
+        // them as an input device. Counting them as an LE remote made the watchdog restart Bluetooth every
+        // few minutes, cutting audio for a device that was working exactly as it should.
+        RemoteWatch.Status status = RemoteWatch.parse(dumpWithDualHeadphones(
+                "    XX:XX:XX:XX:AA:01 : 2\n    XX:XX:XX:XX:BB:02 : 2\n    XX:XX:XX:XX:DD:04 : 0\n",
+                WITH_DUAL_INPUT, 0, "DISARMED"));
+
+        assertEquals(Arrays.asList("Chromecast Remote AA:01", "Chromecast Remote BB:02"), status.remotes);
+        assertTrue(status.idle.isEmpty());
+        assertFalse(status.fault());
+    }
+
+    @Test
+    public void anIdleLeRemoteStillTriggersWithDualDevicePresent() {
+        // Ignoring the headphones must not blunt the watchdog: a genuine LE remote idle is still the fault.
+        RemoteWatch.Status status = RemoteWatch.parse(dumpWithDualHeadphones(
+                "    XX:XX:XX:XX:AA:01 : 0\n    XX:XX:XX:XX:BB:02 : 2\n    XX:XX:XX:XX:DD:04 : 0\n",
+                WITH_DUAL_INPUT, 0, "DISARMED"));
+
+        assertEquals(Arrays.asList("Chromecast Remote AA:01"), status.idle);
+        assertFalse("the headphones are not a remote", status.remotes.contains("Xiaomi Buds 6 DD:04"));
+        assertTrue(status.fault());
+    }
+
     @Test
     public void windowsLineEndingsParseTheSame() {
         RemoteWatch.Status status = RemoteWatch.parse(dump("ON",

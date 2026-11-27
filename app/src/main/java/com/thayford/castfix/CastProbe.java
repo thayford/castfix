@@ -32,9 +32,19 @@ final class CastProbe {
 
     /** True if the answer was signed, false if it was unsigned or an error, null if no answer came. */
     static Boolean signed() {
+        return signed(TIMEOUT_MS);
+    }
+
+    /**
+     * The same check with a caller-chosen limit. The screen runs this on every resume, where the handshake to
+     * loopback answers in well under a second and a long stall would only delay the verdict it is drawing.
+     *
+     * @param timeoutMs how long to wait for the connect and for each read
+     */
+    static Boolean signed(int timeoutMs) {
         try (Socket raw = new Socket()) {
-            raw.connect(new InetSocketAddress("127.0.0.1", CAST_PORT), TIMEOUT_MS);
-            raw.setSoTimeout(TIMEOUT_MS);
+            raw.connect(new InetSocketAddress("127.0.0.1", CAST_PORT), timeoutMs);
+            raw.setSoTimeout(timeoutMs);
             // The receiver's certificate is self-signed, and nothing secret is sent: only its answer is read.
             try (SSLSocket socket = (SSLSocket) trustAll().getSocketFactory()
                     .createSocket(raw, "127.0.0.1", CAST_PORT, true)) {
@@ -52,18 +62,30 @@ final class CastProbe {
                     if (namespace == null || !DEVICE_AUTH.equals(new String(namespace, StandardCharsets.UTF_8))) {
                         continue;
                     }
-                    byte[] auth = field(message, 7);
-                    // DeviceAuthMessage: 2 response, 3 error; AuthResponse: 1 signature
-                    byte[] response = auth == null ? null : field(auth, 2);
-                    if (response == null) return false;
-                    byte[] signature = field(response, 1);
-                    return signature != null && signature.length > 0;
+                    return !signatureIsEmpty(message);
                 }
                 return null;
             }
         } catch (IOException | GeneralSecurityException e) {
             return null;
         }
+    }
+
+    /**
+     * True when a device-auth reply carries no signature, i.e. the receiver has no private key to sign with.
+     *
+     * <p>Walks the outer CastMessage, its binary payload, the DeviceAuthMessage and its response, and looks at
+     * response.signature. A reply it cannot follow counts as unsigned: claiming signed when the answer could
+     * not be read would hide exactly the failure this exists to catch.
+     */
+    static boolean signatureIsEmpty(byte[] message) {
+        // DeviceAuthMessage: 2 response, 3 error; AuthResponse: 1 signature
+        byte[] payload = field(message, 7);
+        if (payload == null) return true;
+        byte[] response = field(payload, 2);
+        if (response == null) return true;
+        byte[] signature = field(response, 1);
+        return signature == null || signature.length == 0;
     }
 
     /** A framed CastMessage carrying DeviceAuthMessage{challenge: {}}, sender to receiver. */

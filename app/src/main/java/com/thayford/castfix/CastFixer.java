@@ -63,7 +63,12 @@ final class CastFixer {
                 != PackageManager.PERMISSION_GRANTED) {
             return log.result("Needs WRITE_SECURE_SETTINGS, granted once from a computer (README, Setup).");
         }
-        if (!journal.isActive() && CastProbe.signed() == Boolean.TRUE) return log.result("Casting already works.");
+        // Cheap checks first: while a previous run is unfinished the answer is already no, and probing would
+        // block for up to the full handshake timeout before being discarded. The same condition also decides
+        // whether a receiver that is signing counts as "already working": a wizard left on makes it not.
+        if (!journal.isActive() && alreadyWorking(CastProbe.signed(), setupEnabled(context))) {
+            return log.result("Casting already works.");
+        }
         try {
             return log.result(SelfAdb.run(context, log, 90_000, this::session));
         } catch (SelfAdb.Unavailable e) {
@@ -236,12 +241,12 @@ final class CastFixer {
     /** Disables the wizard and confirms it; a silent failure here is what kirkwood's crash loop grows from. */
     private boolean disableWizard(Shell shell) throws Exception {
         Shell.Result result = shell.runChecked("pm disable-user --user 0 " + SETUP);
-        if (!result.ok()) {
-            log.add("could not disable the setup wizard: " + result.problem());
-            return false;
-        }
+        // The package list is the authority here, not the exit status: a status that never came back says
+        // nothing about the device, and abandoning the check on it would skip the one verification this
+        // path exists for. The status is only used to explain the failure.
         if (!hasPackage(shell.run("pm list packages -d --user 0"), SETUP)) {
-            log.add("setup wizard still enabled after disable-user");
+            log.add("setup wizard still enabled after disable-user"
+                    + (result.ok() ? "" : " (" + result.problem() + ")"));
             return false;
         }
         journal.setupDisabled();
@@ -273,10 +278,16 @@ final class CastFixer {
         }
         String front = shell.run("dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity'");
         if (front.contains(STOCK_HOME) || front.contains(SETUP)) shell.run("am start -n " + before.component);
-        shell.runChecked("pm disable-user --user 0 " + STOCK_HOME);
+        Shell.Result disabled = shell.runChecked("pm disable-user --user 0 " + STOCK_HOME);
         shell.run("cmd package set-home-activity --user 0 " + before.component);
         HomeState after = HomeState.read(shell);
         if (after.component.equals(before.component)) {
+            // Home is right, but a stock launcher still enabled is the other half of what this run promises
+            // to hand back, so it is verified rather than assumed from the command that was sent.
+            if (!disabled.ok() && !hasPackage(shell.run("pm list packages -d --user 0"), STOCK_HOME)) {
+                log.add("Home is " + before + " again, but the stock launcher stayed on (" + disabled.problem() + ")");
+                return;
+            }
             log.add("Home is " + before + " again");
             return;
         }
@@ -312,5 +323,64 @@ final class CastFixer {
             if (line.trim().equals("package:" + pkg)) return true;
         }
         return false;
+    }
+
+    /**
+     * Whether the setup wizard is enabled for this user, read from the package manager so it needs no adb.
+     *
+     * <p>Returns null rather than false when the package manager cannot answer: the two callers need
+     * opposite defaults. The run shortcut treats "unknown" as on, so it never skips work it cannot rule out;
+     * the screen treats "unknown" as nothing it can claim, which is different from claiming the wizard is
+     * off. Collapsing the two is what let the screen call a risky TV healthy.
+     */
+    static Boolean setupEnabled(Context context) {
+        try {
+            android.content.pm.PackageInfo info = context.getPackageManager()
+                    .getPackageInfo(SETUP, 0);
+            return info.applicationInfo != null && info.applicationInfo.enabled;
+        } catch (PackageManager.NameNotFoundException e) {
+            // No wizard on this device at all: nothing can be enabled, so "off" is the honest answer.
+            return false;
+        } catch (RuntimeException e) {
+            // A visibility or permission failure says nothing about the package's state.
+            return null;
+        }
+    }
+
+    /**
+     * Whether a run can skip its work because the TV is already as it should be.
+     *
+     * <p>Split out so the rule can be tested without Android, which matters because getting it wrong is
+     * silent: the wrong answer is a plausible sentence on the screen, not a crash. Both conditions are
+     * required, and "unknown" never qualifies.
+     *
+     * <p>This covers only the observable state. Whether the run is allowed to ask at all is decided by the
+     * caller, which skips the probe entirely while a previous run is unfinished: that is a reason not to
+     * ask rather than part of the verdict.
+     *
+     * @param signed        the receiver's answer: TRUE signed, FALSE unsigned, null no answer
+     * @param wizardEnabled the setup wizard's state: TRUE on, FALSE off, null unreadable
+     */
+    static boolean alreadyWorking(Boolean signed, Boolean wizardEnabled) {
+        return signed == Boolean.TRUE
+                // Only a provable "off" qualifies. A wizard left on is the crash-loop state on kirkwood, and
+                // an unreadable state is not evidence that it is off.
+                && Boolean.FALSE.equals(wizardEnabled);
+    }
+
+    /**
+     * True when a run failed in a way a later attempt could plausibly fix, which is what earns the single
+     * retry after a boot run loses to the network.
+     *
+     * <p>Lives here, beside the messages it matches, so the rule and the strings cannot drift apart: matching
+     * "no Wi-Fi" against SelfAdb's "No Wi-Fi after 90 s" once failed on case alone and silently disabled the
+     * retry. Matching is case-insensitive for the same reason, and covers only transient causes.
+     */
+    static boolean transientFailure(String result) {
+        if (result == null) return false;
+        String text = result.toLowerCase(java.util.Locale.US);
+        return text.contains("no wi-fi")
+                || text.contains("wireless debugging")
+                || text.contains("did not load");
     }
 }

@@ -26,6 +26,10 @@
         <intent>
             <action android:name="android.accessibilityservice.AccessibilityService" />
         </intent>
+        <!-- The screen reads whether the setup wizard is enabled from the package manager, and from Android
+             11 a package is invisible without being declared here. Without this, getPackageInfo throws and
+             the one state that crash-loops system_server would never be reported. -->
+        <package android:name="com.google.android.tungsten.setupwraith" />
     </queries>
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -38,9 +42,12 @@
         android:label="Cast Fix"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
+        <!-- singleTop so an "am start" with the run extra reaches onNewIntent instead of stacking a second
+             copy of the screen, which is how the run-by-adb path documented in the README works. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -73,6 +80,8 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- MY_PACKAGE_REPLACED as well as BOOT_COMPLETED: an app update replaces the running process without
+             a reboot, and casting would otherwise be left broken until the next restart. -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">

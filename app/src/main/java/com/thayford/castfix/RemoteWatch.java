@@ -113,7 +113,10 @@ final class RemoteWatch {
             device.region(bonded, dump.length());
             int expected = dump.indexOf('\n', bonded) + 1;
             while (device.find() && device.start() == expected) {
-                if (!"BR/EDR".equals(device.group(2))) {
+                // Only a genuine LE device uses the LE connector the way this fault describes. A DUAL device
+                // is bonded for its classic profiles too (audio, or HID over BR/EDR) and idles by design, so
+                // treating one as an LE remote restarted Bluetooth every few minutes for paired headphones.
+                if ("LE".equals(device.group(2))) {
                     String name = device.group(3).trim();
                     leNames.put(suffix(device.group(1)), (name.isEmpty() ? "remote" : name) + " " + suffix(device.group(1)));
                 }
