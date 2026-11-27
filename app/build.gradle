@@ -11,8 +11,8 @@ android {
         // Wireless debugging (adb over TLS, pairing codes) exists from Android 11.
         minSdk 30
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 3
+        versionName '1.2'
         // Chromecast with Google TV runs a 32-bit userspace; the other ABIs only add Conscrypt copies.
         ndk { abiFilters 'armeabi-v7a', 'arm64-v8a' }
     }

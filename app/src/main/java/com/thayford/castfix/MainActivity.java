@@ -6,7 +6,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.text.format.DateFormat;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -43,7 +45,11 @@ public class MainActivity extends Activity {
 
         root.addView(text("Cast Fix", 34, Color.WHITE));
         root.addView(text("Lets phones cast to this Chromecast while the setup wizard stays off for your own "
-                + "launcher. It runs by itself after every restart; use the button if casting stops anyway.",
+                + "launcher. It runs by itself after every restart and whenever the Cast receiver loses its "
+                + "credentials (checked every 15 minutes); use the button if casting stops anyway. While a "
+                + "cast is on screen it pauses accessibility services such as Key Mapper (they keep Disney+'s "
+                + "player controls from hiding), and it restarts Bluetooth when a paired remote can no longer "
+                + "reconnect.",
                 16, Color.rgb(170, 180, 190)));
         status = text("", 20, Color.WHITE);
         status.setPadding(0, dp(24), 0, 0);
@@ -66,6 +72,8 @@ public class MainActivity extends Activity {
         root.addView(recent);
         setContentView(root);
         run.requestFocus();
+        CastWatch.schedule(this);
+        GuardService.start(this);
 
         // From a computer: am start -n com.thayford.castfix/.MainActivity --ez run true
         if (savedInstanceState == null && getIntent().getBooleanExtra("run", false)) start("adb");
@@ -105,8 +113,17 @@ public class MainActivity extends Activity {
         status.setText(busy ? "Running…" : "Last run: " + log.lastResult());
         boolean granted = checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
                 == PackageManager.PERMISSION_GRANTED;
+        SharedPreferences guard = getSharedPreferences("guard", MODE_PRIVATE);
+        long restartAt = guard.getLong("restartAt", 0);
         setup.setText("Setup: " + (log.isPaired() ? "paired" : "NOT paired")
-                + " · settings permission " + (granted ? "granted" : "MISSING"));
+                + " · settings permission " + (granted ? "granted" : "MISSING")
+                + " · adb-only permissions " + (SelfAdb.hasGrants(this) ? "granted" : "pending (next adb run)")
+                + "\nPause accessibility while casting: " + CastPause.mode(this)
+                + " · Remote watchdog: " + (RemoteWatch.enabled(this)
+                        ? guard.getString("remotes", "starting") + (restartAt == 0 ? ", no restarts yet"
+                                : ", " + guard.getInt("restarts", 0) + " restart(s), last "
+                                + DateFormat.format("EEE d MMM HH:mm", restartAt))
+                        : "off"));
         recent.setText(String.join("\n", log.tail(14)));
     }
 
