@@ -21,7 +21,8 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - uses: android-actions/setup-android@v3
+      # The runner image already has the Android SDK (ANDROID_HOME); setup-android@v3 now fails asking
+      # sdkmanager for the removed 'tools' package.
 
       - name: Unit tests and release build
         run: ./gradlew --no-daemon testReleaseUnitTest assembleRelease
