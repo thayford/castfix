@@ -16,32 +16,26 @@ public class CastFixerVerdictTest {
 
     @Test
     public void signingReceiverWithWizardOffIsAlreadyWorking() {
-        assertTrue(CastFixer.alreadyWorking(false, Boolean.TRUE, Boolean.FALSE));
+        assertTrue(CastFixer.alreadyWorking(Boolean.TRUE, Boolean.FALSE));
     }
 
     @Test
     public void signingReceiverWithWizardOnIsNotAlreadyWorking() {
         // The bug found on hardware: the receiver signs, so the old shortcut returned "Casting already
         // works." while the wizard was on. On a replacement-launcher setup that is the crash-loop state.
-        assertFalse(CastFixer.alreadyWorking(false, Boolean.TRUE, Boolean.TRUE));
+        assertFalse(CastFixer.alreadyWorking(Boolean.TRUE, Boolean.TRUE));
     }
 
     @Test
     public void unreadableWizardStateIsNotAlreadyWorking() {
         // Unknown counts as on: a full run costs seconds, a wrong verdict hides the risk.
-        assertFalse(CastFixer.alreadyWorking(false, Boolean.TRUE, null));
+        assertFalse(CastFixer.alreadyWorking(Boolean.TRUE, null));
     }
 
     @Test
     public void unsignedReceiverIsNeverAlreadyWorking() {
-        assertFalse(CastFixer.alreadyWorking(false, Boolean.FALSE, Boolean.FALSE));
-        assertFalse(CastFixer.alreadyWorking(false, null, Boolean.FALSE));
-    }
-
-    @Test
-    public void unfinishedRunIsNeverAlreadyWorking() {
-        // A journal left active means the previous run changed the device and did not put it back.
-        assertFalse(CastFixer.alreadyWorking(true, Boolean.TRUE, Boolean.FALSE));
+        assertFalse(CastFixer.alreadyWorking(Boolean.FALSE, Boolean.FALSE));
+        assertFalse(CastFixer.alreadyWorking(null, Boolean.FALSE));
     }
 
     @Test

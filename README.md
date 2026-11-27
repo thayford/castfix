@@ -39,15 +39,15 @@ Once the receiver has loaded the credentials it keeps them in memory until it re
 by itself: on the HD it exited and came back almost every night, between 2 and 5 am, while the TV only
 slept, and each time casting stopped until the next fix. So Cast Fix runs after every boot, and every 15
 minutes it sends the receiver the same authentication challenge a phone does, over the local Cast port
-(no adb needed for that). When the answer comes back unsigned, it:
+(no adb needed for that). A run does this:
 
-1. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
+1. checks whether an earlier run is unfinished, and asks the receiver whether it can already sign. If it
+   signs and the setup wizard is off, there is nothing to do and the run ends here, without touching adb
+2. switches Wireless debugging on and connects to the TV's own adbd over loopback, with a key that was
    paired once
-2. puts back anything an interrupted earlier run left behind (see below)
-3. asks the receiver whether it can already sign, with the same handshake a phone makes. If it can, there
-   is nothing to do and the run ends there
-4. otherwise switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then
-   the setup wizard
+3. puts back anything an interrupted earlier run left behind (see below)
+4. switches the stock launcher on (so a Home press in the meantime lands somewhere safe), then the setup
+   wizard
 5. asks the receiver every 3 seconds whether it signs now (or, while it doesn't answer on its port, reads
    its log for `Created singleton instance of ClientAuthSigner`). It usually does within seconds.
 6. if it still hasn't after 20 seconds, restarts the receiver (`am crash`) while the wizard is on. A

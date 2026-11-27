@@ -63,11 +63,10 @@ final class CastFixer {
                 != PackageManager.PERMISSION_GRANTED) {
             return log.result("Needs WRITE_SECURE_SETTINGS, granted once from a computer (README, Setup).");
         }
-        // The shortcut may only fire when nothing is at risk. A signing receiver is not enough on its own:
-        // on kirkwood a wizard left on with a replacement launcher owning Home is the state that crash-loops
-        // system_server, and this used to answer "Casting already works." for exactly that TV. Unknown counts
-        // as on, so an unreadable state costs a full run rather than a wrong verdict.
-        if (alreadyWorking(journal.isActive(), CastProbe.signed(), setupEnabled(context))) {
+        // Cheap checks first: while a previous run is unfinished the answer is already no, and probing would
+        // block for up to the full handshake timeout before being discarded. The same condition also decides
+        // whether a receiver that is signing counts as "already working": a wizard left on makes it not.
+        if (!journal.isActive() && alreadyWorking(CastProbe.signed(), setupEnabled(context))) {
             return log.result("Casting already works.");
         }
         try {
@@ -352,16 +351,18 @@ final class CastFixer {
      * Whether a run can skip its work because the TV is already as it should be.
      *
      * <p>Split out so the rule can be tested without Android, which matters because getting it wrong is
-     * silent: the wrong answer is a plausible sentence on the screen, not a crash. All three conditions are
+     * silent: the wrong answer is a plausible sentence on the screen, not a crash. Both conditions are
      * required, and "unknown" never qualifies.
      *
-     * @param journalActive          a previous run left changes behind; they have to be undone first
-     * @param signed                 the receiver's answer: TRUE signed, FALSE unsigned, null no answer
-     * @param wizardEnabled          the setup wizard's state: TRUE on, FALSE off, null unreadable
+     * <p>This covers only the observable state. Whether the run is allowed to ask at all is decided by the
+     * caller, which skips the probe entirely while a previous run is unfinished: that is a reason not to
+     * ask rather than part of the verdict.
+     *
+     * @param signed        the receiver's answer: TRUE signed, FALSE unsigned, null no answer
+     * @param wizardEnabled the setup wizard's state: TRUE on, FALSE off, null unreadable
      */
-    static boolean alreadyWorking(boolean journalActive, Boolean signed, Boolean wizardEnabled) {
-        return !journalActive
-                && signed == Boolean.TRUE
+    static boolean alreadyWorking(Boolean signed, Boolean wizardEnabled) {
+        return signed == Boolean.TRUE
                 // Only a provable "off" qualifies. A wizard left on is the crash-loop state on kirkwood, and
                 // an unreadable state is not evidence that it is off.
                 && Boolean.FALSE.equals(wizardEnabled);

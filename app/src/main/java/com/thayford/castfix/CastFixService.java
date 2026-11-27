@@ -21,6 +21,11 @@ public class CastFixService extends Service {
     private static final AtomicBoolean RUNNING = new AtomicBoolean();
     /** Wait before the single boot-run retry, so it is not racing the same failing conditions. */
     private static final long RETRY_AFTER_MS = 60_000;
+    /**
+     * The startId of the run that owns the flag, or 0. Written and read on the main thread only: onStartCommand
+     * and the finish() it posts both run there.
+     */
+    private int currentStartId = 0;
 
     static boolean isRunning() {
         return RUNNING.get();
@@ -47,6 +52,8 @@ public class CastFixService extends Service {
             // thread's finish() takes the service down.
             return START_NOT_STICKY;
         }
+        currentStartId = startId;
+        int owner = startId;
         String trigger = intent == null ? null : intent.getStringExtra(EXTRA_TRIGGER);
         new Thread(() -> {
             String result;
@@ -65,7 +72,7 @@ public class CastFixService extends Service {
                 RUNNING.set(false);
             }
             String shown = result;
-            new Handler(Looper.getMainLooper()).post(() -> finish(shown));
+            new Handler(Looper.getMainLooper()).post(() -> finish(shown, owner));
         }, "castfix").start();
         return START_NOT_STICKY;
     }
@@ -81,12 +88,38 @@ public class CastFixService extends Service {
         return new CastFixer(this).run("restart-retry");
     }
 
-    /** Takes the notification down and tells the screen, whatever the run did. */
-    private void finish(String result) {
+    /**
+     * Whether a finishing run may take the service down.
+     *
+     * <p>Pure so the rule can be tested without Android. It matters because getting it wrong is invisible:
+     * the wrong answer looks like a run that "just didn't work", with nothing in the log to say why.
+     *
+     * @param finishingStartId the startId of the run that has just finished
+     * @param currentStartId   the startId of the run that owns the service now, or 0
+     * @param running          whether a run currently holds the flag
+     */
+    static boolean ownsService(int finishingStartId, int currentStartId, boolean running) {
+        // A newer start claimed the flag, so this run's teardown would pull the service out from under it.
+        return !running && finishingStartId == currentStartId;
+    }
+
+    /**
+     * Takes the notification down and tells the screen, whatever the run did. Runs on the main thread.
+     *
+     * <p>The toast and the broadcast describe what this run did, so they always happen. Only the teardown is
+     * conditional: a run that finished after another one took over must not stop the service or remove a
+     * notification that now belongs to the newer run.
+     */
+    private void finish(String result, int startId) {
         Toast.makeText(this, "Cast Fix: " + result, Toast.LENGTH_LONG).show();
         sendBroadcast(new Intent(ACTION_DONE).setPackage(getPackageName()));
-        stopForeground(STOP_FOREGROUND_REMOVE);
-        stopSelf();
+        // stopSelf(startId) already refuses when a later start exists; the guard also skips stopForeground,
+        // which would otherwise leave the newer run alive but without the notification keeping it so.
+        if (ownsService(startId, currentStartId, RUNNING.get())) {
+            currentStartId = 0;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf(startId);
+        }
     }
 
     @Override
